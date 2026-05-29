@@ -21,6 +21,7 @@ class AscendDecodeImpl(FMHAImplBase):
         self.need_rope_kv_cache = attn_configs.need_rope_kv_cache
         self.attn_configs = attn_configs
         self.attn_inputs = attn_inputs
+        self.fmha_params = None
 
         self.fmha_impl = AscendDecodeAttnOp(attn_configs, attn_inputs)
         self.rope_impl = self._create_rope_impl(attn_configs)
@@ -83,9 +84,7 @@ class AscendDecodeImpl(FMHAImplBase):
         else:
             q = qkv.chunk(3, dim=-1)[0]
 
-        self.fmha_impl.context_lens = (
-            self.attn_inputs.prefix_lengths + self.attn_inputs.input_lengths
-        )
+        self.fmha_impl.context_lens = self.attn_inputs.sequence_lengths
 
         common.apply_write_cache_store(
             self.write_cache_store_impl, self.attn_inputs, kv_cache
@@ -101,14 +100,28 @@ class AscendDecodeImpl(FMHAImplBase):
 
 
 class AscendDecodeAttnOp:
-    """Encapsulate NPU decode paged attention op, reads cache only."""
+    """Encapsulate NPU decode attention using npu_fused_infer_attention_score.
+
+    Uses FIA with TND layout + block_table (same as vllm-ascend default path)
+    instead of _npu_paged_attention which has known aicore errors on certain
+    block_table configurations.
+    """
+
+    _causal_mask = None
+
+    @classmethod
+    def _get_causal_mask(cls, device):
+        if cls._causal_mask is None or cls._causal_mask.device.type != device.type:
+            cls._causal_mask = torch.triu(
+                torch.ones(2048, 2048, dtype=torch.int8), diagonal=1
+            ).to(device)
+        return cls._causal_mask
 
     def __init__(self, attn_configs, attn_inputs):
         self.num_heads = attn_configs.head_num
         self.num_kv_heads = attn_configs.kv_head_num
         self.head_dim = attn_configs.size_per_head
-        self.scale = attn_configs.scale if attn_configs.scale else \
-                     self.head_dim ** -0.5
+        self.scale = attn_configs.q_scaling * self.head_dim ** -0.5
         self.page_size = attn_inputs.kv_cache.seq_size_per_block if \
                          attn_inputs.kv_cache else 128
         self.block_table = None
@@ -118,23 +131,41 @@ class AscendDecodeAttnOp:
         self.params = params
 
     def prepare(self, attn_inputs):
-        self.block_table = attn_inputs.kv_cache_block_id_host
+        self.block_table = attn_inputs.kv_cache_kernel_block_id_host
         if self.block_table is not None:
             self.block_table = self.block_table.clamp(min=0)
+            if self.block_table.ndim != 2:
+                self.block_table = self.block_table.reshape(-1, self.block_table.shape[-1])
         self.context_lens = attn_inputs.prefix_lengths + attn_inputs.input_lengths
 
     def forward(self, q, kv_cache):
-        output = torch.empty_like(q)
-        torch_npu._npu_paged_attention(
-            query=q,
-            key_cache=kv_cache.k_cache_base,
-            value_cache=kv_cache.v_cache_base,
-            num_kv_heads=self.num_kv_heads,
-            num_heads=self.num_heads,
-            scale_value=self.scale,
-            block_table=self.block_table,
-            context_lens=self.context_lens,
-            block_size=self.page_size,
-            out=output,
+        k_cache = kv_cache.k_cache_base.permute(0, 2, 1, 3).contiguous()
+        v_cache = kv_cache.v_cache_base.permute(0, 2, 1, 3).contiguous()
+        block_table = self.block_table
+        if block_table is not None and block_table.device.type != q.device.type:
+            block_table = block_table.to(q.device)
+        context_lens = self.context_lens
+        if context_lens is not None and context_lens.device.type != q.device.type:
+            context_lens = context_lens.to(q.device)
+        batch_size = q.shape[0]
+        actual_seq_q = torch.arange(
+            1, batch_size + 1, dtype=torch.int32, device=q.device
         )
-        return output
+        actual_seq_kv = torch.cumsum(context_lens.to(torch.int32), dim=0)
+        if actual_seq_kv.device.type != q.device.type:
+            actual_seq_kv = actual_seq_kv.to(q.device)
+        atten_mask = self._get_causal_mask(q.device)
+        attn_output, _ = torch_npu.npu_fused_infer_attention_score(
+            query=q, key=k_cache, value=v_cache,
+            atten_mask=atten_mask,
+            block_table=block_table,
+            input_layout="TND",
+            block_size=self.page_size,
+            actual_seq_lengths=actual_seq_q,
+            actual_seq_lengths_kv=actual_seq_kv,
+            num_key_value_heads=self.num_kv_heads,
+            num_heads=self.num_heads,
+            scale=self.scale,
+            sparse_mode=3,
+        )
+        return attn_output

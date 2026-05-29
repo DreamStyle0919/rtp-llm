@@ -88,16 +88,19 @@ struct KVCache {
                 const int64_t kernel_block_num   = physical_block_num * kernel_blocks_per_kv_block;
 
                 if (separate_kv_cache) {
-                    // Ascend NPU: separate K/V cache with NHD layout
                     auto k_base = k_cache_base_by_layer[idx];
                     auto v_base = v_cache_base_by_layer[idx];
                     if (num_kv_heads > 0 && head_dim > 0) {
                         layer_cache.k_cache_base = k_base.reshape(
-                            {kernel_block_num, (int64_t)kernel_seq_size_per_block,
-                             (int64_t)num_kv_heads, (int64_t)head_dim});
+                            {kernel_block_num,
+                             (int64_t)kernel_seq_size_per_block,
+                             (int64_t)num_kv_heads,
+                             (int64_t)head_dim});
                         layer_cache.v_cache_base = v_base.reshape(
-                            {kernel_block_num, (int64_t)kernel_seq_size_per_block,
-                             (int64_t)num_kv_heads, (int64_t)head_dim});
+                            {kernel_block_num,
+                             (int64_t)kernel_seq_size_per_block,
+                             (int64_t)num_kv_heads,
+                             (int64_t)head_dim});
                     } else {
                         layer_cache.k_cache_base = k_base;
                         layer_cache.v_cache_base = v_base;
@@ -183,6 +186,7 @@ struct PyContextParallelParams {
 };
 
 struct PyAttentionInputs {
+    std::optional<KVCache> kv_cache;
     bool          is_prefill{false};
     bool          is_target_verify{false};
     torch::Tensor prefix_lengths;
