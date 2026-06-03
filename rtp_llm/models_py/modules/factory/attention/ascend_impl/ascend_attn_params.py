@@ -23,11 +23,22 @@ class AscendAttnParams:
     positions_d: Optional[torch.Tensor] = None  # RoPE position IDs (device tensor)
 
 
+def _squeeze_block_table(block_table):
+    """Ensure block_table is 2-D [batch, max_blocks].
+
+    The C++ side may pass a 3-D tensor [group, batch, max_blocks].
+    For non-hybrid models group=1, so we squeeze the leading dim.
+    """
+    if block_table is not None and block_table.dim() == 3:
+        block_table = block_table.squeeze(0)
+    return block_table
+
+
 def build_ascend_params(attn_inputs, page_size: int) -> AscendAttnParams:
     """Build AscendAttnParams from PyAttentionInputs."""
     params = AscendAttnParams()
 
-    params.block_table = attn_inputs.kv_cache_block_id_host
+    params.block_table = _squeeze_block_table(attn_inputs.kv_cache_block_id_host)
 
     if attn_inputs.sequence_lengths.numel() > 0:
         params.seq_lens = attn_inputs.prefix_lengths + attn_inputs.input_lengths
@@ -66,7 +77,7 @@ def compute_ascend_attn_params(attn_inputs):
         slot_mapping: [num_tokens] int64, CPU
     """
     is_prefill = attn_inputs.is_prefill
-    block_table = attn_inputs.kv_cache_block_id_host  # always on CPU
+    block_table = _squeeze_block_table(attn_inputs.kv_cache_block_id_host)  # always on CPU
     page_size = (attn_inputs.kv_cache.seq_size_per_block
                  if attn_inputs.kv_cache is not None else 128)
 
