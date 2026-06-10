@@ -5,6 +5,10 @@
 #include "rtp_llm/cpp/utils/KVCacheUtils.h"
 #include "rtp_llm/cpp/disaggregate/cache_store/MemoryUtil.h"
 #include "rtp_llm/cpp/disaggregate/cache_store/NormalCacheStore.h"
+
+#if USING_ASCEND
+#include <torch_npu/csrc/aten/common/from_blob.h>
+#endif
 #include "rtp_llm/cpp/utils/ProfilingScope.h"
 
 namespace rtp_llm {
@@ -209,7 +213,11 @@ void BlockPool::processLayerTensors(size_t                    layout_idx,
                                      .dtype(k_layer_tensor.dtype())
                                      .device(v_cache_buffer_.device())
                                      .requires_grad(false);
+#if USING_ASCEND
+                auto v_view = at_npu::native::from_blob(v_ptr, k_layer_tensor.sizes(), k_layer_tensor.strides(), v_options);
+#else
                 auto v_view = torch::from_blob(v_ptr, k_layer_tensor.sizes(), k_layer_tensor.strides(), v_options);
+#endif
                 global_layer_v_tensors_[global_layer] = v_view;
             }
         }
