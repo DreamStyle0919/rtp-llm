@@ -3,7 +3,17 @@
 #include "rtp_llm/cpp/utils/Logger.h"
 #include "rtp_llm/cpp/cache/KVCacheSpec.h"
 
+#if USING_ASCEND
+#include <torch_npu/csrc/aten/common/from_blob.h>
+#endif
+
 namespace rtp_llm {
+
+#if USING_ASCEND
+#define CACHE_FROM_BLOB at_npu::native::from_blob
+#else
+#define CACHE_FROM_BLOB torch::from_blob
+#endif
 
 // Initialization function
 bool MemoryLayoutStrategy::init(const MemoryLayoutConfig& config,
@@ -68,7 +78,7 @@ void MemoryLayoutStrategy::processKVTensor(torch::Tensor& kv_cache_tensor) {
         for (uint32_t layer_id = 0; layer_id < config_.layer_num; ++layer_id) {
             void* layer_ptr = static_cast<char*>(kv_cache_tensor.data_ptr())
                             + static_cast<size_t>(layer_id) * layer_block_bytes;
-            layer_kv_tensors_.push_back(torch::from_blob(
+            layer_kv_tensors_.push_back(CACHE_FROM_BLOB(
                 layer_ptr,
                 {static_cast<int64_t>(config_.block_num),
                  static_cast<int64_t>(config_.seq_size_per_block),
@@ -82,7 +92,7 @@ void MemoryLayoutStrategy::processKVTensor(torch::Tensor& kv_cache_tensor) {
         for (uint32_t layer_id = 0; layer_id < config_.layer_num; ++layer_id) {
             void* layer_ptr = static_cast<char*>(kv_cache_tensor.data_ptr())
                             + static_cast<size_t>(layer_id) * layer_block_bytes;
-            layer_kv_tensors_.push_back(torch::from_blob(
+            layer_kv_tensors_.push_back(CACHE_FROM_BLOB(
                 layer_ptr,
                 {static_cast<int64_t>(config_.block_num),
                  static_cast<int64_t>(kv_block_stride_elems)},
@@ -128,7 +138,7 @@ bool MemoryLayoutStrategy::processScaleTensor(torch::Tensor& kv_scale_tensor) {
         for (uint32_t layer_id = 0; layer_id < config_.layer_num; ++layer_id) {
             void* layer_ptr = static_cast<char*>(kv_scale_tensor.data_ptr())
                             + static_cast<size_t>(layer_id) * layer_block_bytes;
-            layer_kv_scale_tensors_.push_back(torch::from_blob(
+            layer_kv_scale_tensors_.push_back(CACHE_FROM_BLOB(
                 layer_ptr,
                 {static_cast<int64_t>(config_.block_num),
                  static_cast<int64_t>(config_.seq_size_per_block),
@@ -155,7 +165,7 @@ bool MemoryLayoutStrategy::processScaleTensor(torch::Tensor& kv_scale_tensor) {
         for (uint32_t layer_id = 0; layer_id < config_.layer_num; ++layer_id) {
             void* layer_ptr = static_cast<char*>(kv_scale_tensor.data_ptr())
                             + static_cast<size_t>(layer_id) * layer_block_bytes;
-            layer_kv_scale_tensors_.push_back(torch::from_blob(
+            layer_kv_scale_tensors_.push_back(CACHE_FROM_BLOB(
                 layer_ptr,
                 {static_cast<int64_t>(config_.block_num),
                  static_cast<int64_t>(scale_stride_elems)},
